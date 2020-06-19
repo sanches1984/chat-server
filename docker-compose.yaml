@@ -1,0 +1,23 @@
+version: "3"
+services:
+  chat:
+    image: chat-server
+    container_name: chat-server
+    ports:
+      - 8285:80
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - redis
+    environment:
+      GOPATH: '/go'
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  redis:
+    image: redis:4.0
+    container_name: chat-redis
+    ports:
+      - 8282:6379
+    environment:
+      REDIS_PASSWORD: chatserver

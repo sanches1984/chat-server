@@ -1,0 +1,5 @@
+version: 2.1
+
+host: localhost:8282
+port: 8286
+channel: chat

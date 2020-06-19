@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Chat</title>
+</head>
+<body>
+<div id="connection">
+    <label style="font-size: 14px; font-family: Arial,serif" for="username">Name:</label>
+    <input style="font-size: 14px" id="username" value="user"/>
+    <button style="font-size: 14px" onclick="connect()">connect</button>
+</div>
+<div id="messaging" style="display: none">
+    <label style="font-size: 14px; font-family: Arial,serif" for="message">Message:</label>
+    <input style="font-size: 14px" id="message" value=""/>
+    <button style="font-size: 14px" onclick="send()">send</button>
+    <button style="font-size: 14px" onclick="exit()">exit</button>
+</div>
+<pre id="output"></pre>
+<script>
+    let socket;
+    let username = '';
+    let output = document.getElementById("output");
+    let connection = document.getElementById("connection");
+    let messaging = document.getElementById("messaging");
+
+    function connect() {
+        username = document.getElementById("username").value.toString();
+        if (username === '') {
+            return
+        }
+
+        output.innerHTML = 'Connecting... ';
+        socket = new WebSocket("ws://localhost:8286/chat/"+username);
+
+        socket.onopen = function () {
+            output.innerHTML += "OK\n";
+            connection.style.display = "none";
+            messaging.style.display = "block";
+        };
+        socket.onclose = function () {
+            output.innerHTML += "Connection closed\n";
+            connection.style.display = "block";
+            messaging.style.display = "none";
+        };
+
+        socket.onmessage = function (e) {
+            if (e.data !== undefined) {
+                let msg = JSON.parse(e.data);
+                if (msg !== undefined) {
+                    if (msg.type !== "public") {
+                        output.innerHTML += "<i>" + msg.username + " " + msg.message + "</i>\n";
+                    } else {
+                        output.innerHTML += "<b>" + msg.username + ":</b> " + msg.message + "\n";
+                    }
+                }
+            }
+        };
+
+        socket.onerror = () => {
+            output.innerHTML += "ERROR\n";
+            connection.style.display = "block";
+            messaging.style.display = "none";
+        };
+    }
+
+    function send() {
+        let msg_text = document.getElementById("message").value;
+        if (!socket.isConnected || username === '' || msg_text === '') {
+            return
+        }
+
+        let msg = {username: username, type: "public", message: msg_text};
+        socket.send(msg);
+    }
+
+    function exit() {
+        if (!socket.isConnected || username === '') {
+            return
+        }
+
+        let msg = {username: username, type: "exit"};
+        socket.send(msg);
+    }
+</script>
+</body>
+</html>
