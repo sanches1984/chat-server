@@ -1,81 +1,165 @@
 package server
 
 import (
-	"context"
 	"github.com/sanches1984/chat-server/model"
 	"log"
 )
 
 type hub struct {
 	storage    *storage
-	register   chan *webSocketClient
-	unregister chan *webSocketClient
-	incoming   chan *model.Message
-	outgoing   chan *model.Message
+	clients    map[string]*Client
+	broadcast  chan *model.Message
+	register   chan *Client
+	unregister chan *Client
 	reconnect  *chan bool
-	clients    map[string]*webSocketClient
 }
 
 func newHub(storage *storage, reconnect *chan bool) *hub {
 	return &hub{
 		storage:    storage,
-		register:   make(chan *webSocketClient),
-		unregister: make(chan *webSocketClient),
-		incoming:   make(chan *model.Message),
-		outgoing:   make(chan *model.Message),
+		broadcast:  make(chan *model.Message),
+		register:   make(chan *Client),
+		unregister: make(chan *Client),
+		clients:    make(map[string]*Client),
 		reconnect:  reconnect,
-		clients:    make(map[string]*webSocketClient),
 	}
 }
 
-func (h *hub) run(ctx context.Context) {
+func (h *hub) run() {
 	for {
 		select {
 		case <-*h.reconnect:
-			log.Println("Hub reconnect start...")
-			go h.closeAllClients(ctx)
+			go h.closeAllClients()
 		case client := <-h.register:
-			log.Println("Register client:", client.UserName)
-			h.clients[client.UserName] = client
-			err := h.storage.addSession(client.UserName)
-			if err != nil {
-				log.Println(ctx, "Can't set user:", err)
-			}
+			h.registerClient(client)
 		case client := <-h.unregister:
-			log.Println("Unregister client:", client.UserName)
-			err := client.conn.close()
-			if err != nil {
-				log.Println("Can't close websocket:", err)
-			}
-			err = h.storage.deleteSession(client.UserName)
-			if err != nil {
-				log.Println("Can't drop session:", err)
-			}
-			if _, ok := h.clients[client.UserName]; ok {
-				delete(h.clients, client.UserName)
-			}
-		case message := <-h.outgoing:
-			log.Println("Send message:", message)
-			go h.sendMessage(ctx, message)
-		case message := <-h.incoming:
-			log.Println("Recieve message:", message)
-			go h.sendMessage(ctx, message)
+			h.unregisterClient(client)
+		case message := <-h.broadcast:
+			h.processMessage(message)
 		}
 	}
 }
 
-func (h *hub) closeAllClients(ctx context.Context) {
+func (h *hub) registerClient(client *Client) {
+	log.Println("Register client:", client.username)
+	err := h.storage.addSession(client.username)
+	if err != nil {
+		log.Println(err.Error())
+		return
+	}
+
+	h.clients[client.username] = client
+	h.processMessage(&model.Message{
+		UserName: client.username,
+		Type:     model.MessageEnter,
+		Message:  "joined.",
+	})
+}
+
+func (h *hub) unregisterClient(client *Client) {
+	log.Println("Unregister client:", client.username)
+	err := h.storage.deleteSession(client.username)
+	if err != nil {
+		log.Println(err.Error())
+		return
+	}
+
+	h.processMessage(&model.Message{
+		UserName: client.username,
+		Type:     model.MessageExit,
+		Message:  "left.",
+	})
+
+	if _, ok := h.clients[client.username]; ok {
+		delete(h.clients, client.username)
+		close(client.send)
+	}
+}
+
+func (h *hub) processMessage(message *model.Message) {
+	log.Println("Process message:", string(message.ToJSON()))
+
+	switch message.Type {
+	case model.MessagePublic:
+		h.storage.updateSession(message.UserName)
+		h.sendAll(message)
+	case model.MessagePrivate:
+		h.storage.updateSession(message.UserName)
+		h.sendPersonal(&model.Message{
+			UserName: message.To,
+			Type:     model.MessagePrivate,
+			Message:  message.Message,
+		})
+		h.sendPersonal(&model.Message{
+			UserName: message.UserName,
+			Type:     model.MessagePrivate,
+			Message:  message.Message,
+		})
+	case model.MessageStat:
+		list, err := h.getSessions()
+		if err != nil {
+			log.Println("Error:", err)
+			return
+		}
+
+		h.sendPersonal(&model.Message{
+			UserName: message.UserName,
+			Type:     model.MessageStat,
+			Message:  list.GetStatText(),
+		})
+	case model.MessageList:
+		list, err := h.getSessions()
+		if err != nil {
+			log.Println("Error:", err)
+			return
+		}
+
+		h.sendPersonal(&model.Message{
+			UserName: message.UserName,
+			Type:     model.MessageList,
+			Message:  list.GetUsers(),
+		})
+	case model.MessageEnter:
+		h.sendAll(message)
+	case model.MessageExit:
+		h.sendAll(message)
+	}
+}
+
+func (h *hub) sendPersonal(message *model.Message) {
+	client := h.clients[message.UserName]
+	select {
+	case client.send <- message.ToJSON():
+	default:
+		close(client.send)
+		delete(h.clients, client.username)
+	}
+}
+
+func (h *hub) sendAll(message *model.Message) {
+	for _, client := range h.clients {
+		select {
+		case client.send <- message.ToJSON():
+		default:
+			close(client.send)
+			delete(h.clients, client.username)
+		}
+	}
+}
+
+func (h *hub) getSessions() (model.SessionList, error) {
+	userNames := make([]string, 0, len(h.clients))
+	for client, _ := range h.clients {
+		userNames = append(userNames, client)
+	}
+
+	return h.storage.getSessions(userNames)
+}
+
+func (h *hub) closeAllClients() {
+	log.Println("Hub reconnect start...")
 	for _, client := range h.clients {
 		h.unregister <- client
 	}
-	log.Println("Hub reconnect complete")
-}
-
-func (h *hub) sendMessage(ctx context.Context, message *model.Message) {
-	for _, c := range h.clients {
-		err := c.conn.writeMessage(message.ToJSON())
-		if err != nil {
-			log.Println("Write message error:", err)
-		}
-	}
+	log.Println("Hub reconnect complete.")
 }

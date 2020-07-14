@@ -1,24 +1,27 @@
 package server
 
 import (
-	"context"
+	"github.com/gorilla/websocket"
+	"log"
 	"net/http"
+	"strings"
 )
 
 type server struct {
 	storage *storage
 	hub     *hub
+	conn    *websocket.Conn
 	host    string
 	channel string
+	send    chan []byte
 }
 
 type IServer interface {
-	RunProcessor(ctx context.Context)
-	RunSubListener(ctx context.Context)
-	Serve(ctx context.Context, w http.ResponseWriter, r *http.Request)
+	Serve(w http.ResponseWriter, r *http.Request)
+	Run()
 }
 
-func NewServer(host, channel string) (IServer, error) {
+func NewServer(host string) (IServer, error) {
 	reconnectChan := make(chan bool)
 	storage, err := newStorage(&reconnectChan, host)
 	if err != nil {
@@ -29,27 +32,43 @@ func NewServer(host, channel string) (IServer, error) {
 	return &server{
 		storage: storage,
 		hub:     hub,
-		host:    host,
-		channel: channel,
 	}, nil
 }
 
-func (c server) RunProcessor(ctx context.Context) {
-	c.hub.run(ctx)
+func (c *server) Serve(w http.ResponseWriter, r *http.Request) {
+	client := c.subscribe(w, r)
+	if client == nil {
+		log.Println("Client empty")
+		return
+	}
+	go client.writePump()
+	go client.readPump()
 }
 
-func (c server) RunSubListener(ctx context.Context) {
-	c.pubSubListener(ctx)
+func (c *server) Run() {
+	c.hub.run()
 }
 
-func (c server) Serve(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	c.subscribe(ctx, w, r)
-	go c.RunProcessor(ctx)
-	go c.RunSubListener(ctx)
-}
+func (c *server) subscribe(w http.ResponseWriter, r *http.Request) *Client {
+	params := strings.Split(r.URL.Path, "/")
+	userName := params[len(params)-1]
+	if userName == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return nil
+	}
+	if _, ok := c.hub.clients[userName]; ok {
+		w.WriteHeader(http.StatusForbidden)
+		log.Println("Username exists:", userName)
+		return nil
+	}
 
-//func (c server) Publish(message *model.Message) error {
-//	log.Println("Publish message:", string(message.ToJSON()))
-//	_, err := c.hub.Conn.Do("PUBLISH", c.channel, message.ToJSON())
-//	return err
-//}
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err.Error())
+		return nil
+	}
+
+	client := &Client{username: userName, hub: c.hub, conn: conn, send: make(chan []byte, 1024)}
+	client.hub.register <- client
+	return client
+}

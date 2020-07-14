@@ -3,12 +3,12 @@ package server
 import (
 	"fmt"
 	"github.com/gomodule/redigo/redis"
+	"github.com/sanches1984/chat-server/model"
+	"log"
 	"net"
+	"strconv"
 	"sync"
-	"time"
 )
-
-const prefix = "skt"
 
 type storage struct {
 	sync.Mutex
@@ -74,7 +74,7 @@ TryAgain:
 
 // Добавляет запись о сессии юзера
 func (s *storage) addSession(userName string) error {
-	_, err := s.do("SET", userName, time.Now().String())
+	_, err := s.do("SET", userName, int(0))
 	return err
 }
 
@@ -82,4 +82,49 @@ func (s *storage) addSession(userName string) error {
 func (s *storage) deleteSession(userName string) error {
 	_, err := s.do("DEL", userName)
 	return err
+}
+
+func (s *storage) getSessionCount(userName string) (int, error) {
+	data, err := s.do("GET", userName)
+	if err != nil {
+		return 0, err
+	}
+	// на случай когда после перезапуска редиса пустое хранилище
+	if data == nil {
+		return 0, nil
+	}
+
+	count, err := strconv.Atoi(string(data.([]byte)))
+	return count, err
+}
+
+// Обновляет запись о сессии юзера
+func (s *storage) updateSession(userName string) {
+	count, err := s.getSessionCount(userName)
+	if err != nil {
+		return
+	}
+	count++
+
+	_, err = s.do("SET", userName, count)
+	if err != nil {
+		log.Println("Error:", err)
+	}
+}
+
+func (s *storage) getSessions(userNames []string) (model.SessionList, error) {
+	list := make([]model.Session, 0, len(userNames))
+	for _, userName := range userNames {
+		count, err := s.getSessionCount(userName)
+		if err != nil {
+			return nil, err
+		}
+
+		list = append(list, model.Session{
+			UserName: userName,
+			Count:    count,
+		})
+	}
+
+	return list, nil
 }

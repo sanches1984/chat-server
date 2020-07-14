@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"github.com/go-yaml/yaml"
 	"github.com/sanches1984/chat-server/server"
 	"io/ioutil"
@@ -16,21 +15,20 @@ type Config struct {
 }
 
 func main() {
-	ctx := context.Background()
 	config, err := loadConfig()
 	if err != nil {
 		panic(err)
 	}
 
 	log.Println("Starting server:", config.Host, "/", config.Channel)
-	srv, err := server.NewServer(config.Host, config.Channel)
+	srv, err := server.NewServer(config.Host)
 	if err != nil {
 		panic(err)
 	}
 
+	go srv.Run()
 	http.HandleFunc("/chat/", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("api")
-		srv.Serve(ctx, w, r)
+		srv.Serve(w, r)
 	})
 
 	log.Println("Server started: listening", config.Port, "...")
